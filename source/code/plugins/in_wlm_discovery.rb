@@ -15,7 +15,7 @@ module Fluent
     end
 
     config_param :wlm_class_file, :string
-    config_param :discovery_time_file, :string
+    config_param :last_discovery_time_file, :string
     config_param :omi_mapping_path, :string
 
     def configure (conf)
@@ -42,30 +42,34 @@ module Fluent
     end
 
     def discover
-      omi_lib = WLM::WLMOMIDiscoveryCollector.new(@omi_mapping_path)
-      discovery_data = omi_lib.get_discovery_data()
-      wlm_formatter = WLM::WLMDataFormatter.new(@wlm_class_file)
-      discovery_data.each do |wclass|
-	if wclass["class_name"].to_s == "Universal Linux Computer"
-          wclass["discovery_data"][0]["CSName"] = OMS::Common.get_fully_qualified_domain_name
-	end
-        discovery_xml = wlm_formatter.get_discovery_xml(wclass)
-        instance = {}
-        instance["Host"] = OMS::Common.get_fully_qualified_domain_name
-        instance["OSType"] = "Linux"
-        instance["ObjectName"] = wclass["class_name"]
-        instance["EncodedDataItem"] = Base64.strict_encode64(discovery_xml)
-        wrapper = {
-          "DataType"=>"WLM_LINUX_INSTANCE_DATA_BLOB",
-          "IPName"=>"InfrastructureInsights",
-          "DataItems"=>[instance]
-        }
-        router.emit("oms.wlm.discovery", Time.now.to_f, wrapper)
-      end # each
-      update_discovery_time(Time.now.to_i)
-      $log.debug "Discovery data for #{@omi_mapping_path} generated successfully"
-      get_vm_metadata()
+      is_azure_vm = get_vm_metadata()
+      if is_azure_vm
+        omi_lib = WLM::WLMOMIDiscoveryCollector.new(@omi_mapping_path)
+        discovery_data = omi_lib.get_discovery_data()
+        wlm_formatter = WLM::WLMDataFormatter.new(@wlm_class_file)
+        discovery_data.each do |wclass|
+          if wclass["class_name"].to_s == "Universal Linux Computer"
+            wclass["discovery_data"][0]["CSName"] = OMS::Common.get_fully_qualified_domain_name
+          end
+          discovery_xml = wlm_formatter.get_discovery_xml(wclass)
+          instance = {}
+          instance["Host"] = OMS::Common.get_fully_qualified_domain_name
+          instance["OSType"] = "Linux"
+          instance["ObjectName"] = wclass["class_name"]
+          instance["EncodedDataItem"] = Base64.strict_encode64(discovery_xml)
+          wrapper = {
+            "DataType"=>"WLM_LINUX_INSTANCE_DATA_BLOB",
+            "IPName"=>"InfrastructureInsights",
+            "DataItems"=>[instance]
+          }
+          router.emit("oms.wlm.discovery", Time.now.to_f, wrapper)
+        end # each
+        update_discovery_time(Time.now.to_i)
+        $log.debug "Discovery data for #{@omi_mapping_path} generated successfully"
+      end
     end # method discover
+
+
 
     def run_periodic
       begin
@@ -100,10 +104,12 @@ module Fluent
           $log.error "Error generating discovery data #{e}"
         end # begin
     end # method run_periodic
-    
+
+
+
     def update_discovery_time(time)
       begin
-        time_file = File.open(@discovery_time_file, "w")
+        time_file = File.open(@last_discovery_time_file, "w")
         time_file.write(time.to_s)
       rescue => e
         $log.debug "Error updating last discovery time #{e}"
@@ -111,10 +117,10 @@ module Fluent
         time_file.close unless time_file.nil?
       end # begin
     end # method update_discovery_time
-    
+
     def get_last_discovery_time()
       begin
-        last_discovery_time = File.open(@discovery_time_file, &:readline)
+        last_discovery_time = File.open(@last_discovery_time_file, &:readline)
         return last_discovery_time.strip()
       rescue => e
         $log.debug "Error reading last discovery time #{e}"
@@ -136,11 +142,17 @@ module Fluent
           "DataItems"=>[metadata_instance]
         }
         router.emit("oms.wlm.vm.metadata", Time.now.to_f, wrapper)
+        if metadata_json.nil?
+          return false
+        end # if
       rescue => e
         $log.error "Error sending VM metadata #{e}"
+        return false
       end # begin
+      return true
     end # method get_vm_metadata
 
   end # class WLMOMIDiscovery
 
 end # module Fluent
+
